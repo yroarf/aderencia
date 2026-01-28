@@ -303,9 +303,7 @@ with st.expander("🧠 Prompt", expanded=False):
     # Variável global para uso na análise
 
 REFERENCIA_LEGAL = referencia_final if 'referencia_final' in locals() else ""
-    # ============================================================
-    #  PROMPT DO MODELO
-    # ============================================================
+   
 
 st.divider()
 
@@ -673,5 +671,6 @@ if resultados_para_plot:
 # Rodapé
 st.markdown("---")
 st.caption("Analisador de Aderência - A2 | Desenvolvido por Fabiana, João, Lívia, Túlio e Yroá")
+
 
 
