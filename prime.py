@@ -15,6 +15,8 @@ from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.datamodel.base_models import InputFormat
 
+from rascunho import extrair_subdominio_gov
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # ========================= CONFIGURAÇÃO PÁGINA =========================
@@ -55,17 +57,19 @@ LISTA_1 = [
 
 # ======================= PROMPT DE ANÁLISE =============
 
-prompt_padrao = """
+prompt_padrao = f"""
 Você é um analista jurídico especializado em direito eleitoral.
 
-Analise o texto fornecido e identifique qualquer indício de conduta vedada aos agentes públicos em período eleitoral.
+Analise o texto fornecido e identifique qualquer indício de conduta vedada aos agentes públicos **em período eleitoral**, considerando a data de referência: {data_referencia}.
 
-Considere na análise a base legal de referência informada pelo usuário.
+As vedações e restrições devem ser avaliadas com base no momento próximo à data informada ({data_referencia}).
+
+Considere na análise a base legal ({base_legal}) de referência informada pelo usuário.
 
 REGRAS OBRIGATÓRIAS:
 - Não adicione explicações, introduções ou conclusões.
 - Não use markdown, negrito ou qualquer formatação.
-- Retorne APENAS um JSON válido com a estrutura exata abaixo, seguido de uma lista de números.
+- Retorne APENAN um JSON válido com a estrutura exata abaixo.
 
 FORMATO OBRIGATÓRIO DO RETORNO (nada mais, nada menos):
 
@@ -86,8 +90,28 @@ Texto para análise:
 \"\"\"{chunk}\"\"\"
 """
 
-st.title("🗳️ Analisador de Aderência")
-st.markdown("**Compare conteúdo de notícias de sites institucionais com normas legais eleitorais**")
+col_titulo, col_data = st.columns(2)
+with col_titulo:
+    st.title("🗳️ Analisador de Aderência")
+with col_data:
+    st.markdown("**Data de referência**")
+    data_referencia = st.date_input(
+        label="Período eleitoral de referência",
+        value=None,  # sem valor padrão fixo → usuário deve escolher
+        min_value=None,
+        max_value=None,
+        help="Selecione a data do primeiro turno).",
+        format="DD/MM/YYYY"
+    )
+if data_referencia is not None:
+    st.session_state.data_referencia = data_referencia
+    st.caption(f"Data selecionada: **{data_referencia.strftime('%d/%m/%Y')}**")
+else:
+    st.session_state.data_referencia = None
+    st.info("Selecione uma data de referência para ativar a análise contextualizada no período eleitoral.")
+
+st.markdown("**Compare conteúdo de notícias de sites institucionais com normas eleitorais**")
+st.divider()
 
 # Divisor visual
 st.divider()
@@ -102,6 +126,26 @@ if "sites_df" not in st.session_state:
     st.session_state.sites_df = pd.DataFrame(columns=["URL", "Nome do Site"])
 
 # ====================== ADIÇÃO DE NOVO SITE ======================
+def extrair_subdominio_gov(url: str) -> str:
+
+    parsed = urlparse(url.strip())
+    netloc = parsed.netloc.lower()
+
+    if ':' in netloc:
+        netloc = netloc.split(':')[0]
+    if netloc.startswith('www.'):
+        netloc = netloc[4:]
+    if not netloc.endswith('.gov.br'):
+        raise ValueError(f"A URL não termina com .gov.br: {url}")
+    dominio_sem_gov = netloc[:-7]
+    partes = dominio_sem_gov.split('.')
+    if len(partes) >= 2:
+        resultado = '.'.join(partes[-2:])
+    else:
+        resultado = partes[-1]
+    return resultado
+
+
 with st.expander("🌐 sites", expanded=False):
     st.markdown("##### Adicionar novo site")
     col1, col2 = st.columns([3, 1])
@@ -111,8 +155,6 @@ with st.expander("🌐 sites", expanded=False):
             placeholder="https://www.exemplo.go.gov.br/noticias",
             help="Página principal de notícias ou comunicados do município."
         )
-    with col2:
-        novo_nome = st.text_input("Nome para exibição (opcional)", placeholder="Ex: Quirinópolis - GO")
 
     if st.button("Adicionar Site", type="primary"):
         if not nova_url.strip():
@@ -124,7 +166,7 @@ with st.expander("🌐 sites", expanded=False):
             if url_limpa in urls_existentes:
                 st.error("Esta URL já foi adicionada.")
             else:
-                nome_exibicao = novo_nome.strip() or urlparse(url_limpa).netloc
+                nome_exibicao = urlparse(url_limpa).netloc
                 novo_site = pd.DataFrame([{
                     "URL": url_limpa,
                     "Nome do Site": nome_exibicao
@@ -228,7 +270,7 @@ with st.expander("📋 Base Legal", expanded=False):
         # Texto final consolidado para a LLM
         referencia_final = texto_referencia
         if texto_manual.strip():
-            referencia_final += "\n\n" + texto_manual.strip()
+            referencia_final += "\n\n" + texto_manual.strip() #adiciona o texto inserido no text_area
 
         if not referencia_final.strip():
             st.warning("Nenhum texto de referência carregado ainda.")
@@ -302,8 +344,8 @@ with st.expander("🧠 Prompt", expanded=False):
 
     # Variável global para uso na análise
 
-REFERENCIA_LEGAL = referencia_final if 'referencia_final' in locals() else ""
-   
+base_legal = referencia_final if 'referencia_final' in locals() else ""
+
 
 st.divider()
 
@@ -479,13 +521,15 @@ def chunk_por_paragrafos(texto, limite):
 #  ANÁLISE COM LLM - chamada da API do Groq (ok)
 # ============================================================
 
-def analisar_com_llm(chunk: str, model: str, temperatura: float, prompt_base: str, referencia_legal: str):
+def analisar_com_llm(chunk: str, model: str, temperatura: float, prompt_base: str, referencia_legal: str, data_referencia: str):
 
     if not chunk.strip():
         return [], [0, 0, 0, 0]
     prompt_completo = prompt_base.format(
         chunk=chunk,
-        referencia_legal=REFERENCIA_LEGAL or "Nenhuma base legal fornecida.")
+        referencia_legal=base_legal or "Nenhuma base legal fornecida.",
+        data_referencia=data_referencia,
+    )
 
     try:
         response = client.chat.completions.create(
@@ -571,11 +615,13 @@ if analisar:
                     # print(chunks)
                     for chunk in chunks:
                         if chunk.strip():
-                            trecho_divergente, lista_contagem = analisar_com_llm(chunk,
-                                                                                 modeloIA,
-                                                                                 temperatura,
-                                                                                 prompt_personalizado,
-                                                                                 REFERENCIA_LEGAL)
+                            trecho_divergente, lista_contagem = analisar_com_llm(
+                                chunk,
+                                modeloIA,
+                                temperatura,
+                                prompt_personalizado,
+                                base_legal,
+                                data_referencia=st.session_state.get("data_referencia"))
 
                             if trecho_divergente:
                                 trechos_divergentes.extend(trecho_divergente)
@@ -613,13 +659,17 @@ if analisar:
 # =====================================================================
 
 
+
 resultados_para_plot = st.session_state.get("resultados", [])
 
 if resultados_para_plot:
-    df_result = pd.DataFrame(
-        {"Site": [r.get("url", "") for r in resultados_para_plot],
-         "Aderencia (%)": [float(r.get("aderencia", 0.0)) for r in resultados_para_plot]}
-    )
+    def nome_grafico(url):
+        return extrair_subdominio_gov(url)
+
+    df_result = pd.DataFrame({
+        "Site": [nome_grafico(r.get("url", "")) for r in resultados_para_plot],
+        "Aderencia (%)": [float(r.get("aderencia", 0.0)) for r in resultados_para_plot]
+    })
     print('df_result')
     print(df_result)
     # Remove entradas vazias (defensivo)
@@ -670,7 +720,4 @@ if resultados_para_plot:
 
 # Rodapé
 st.markdown("---")
-st.caption("Analisador de Aderência - A2 | Desenvolvido por Fabiana, João, Lívia, Túlio e Yroá")
-
-
-
+st.caption("Analisador de Aderência | Desenvolvido por Fabiana, João Vicente, Lívia, Túlio e Yroá")
